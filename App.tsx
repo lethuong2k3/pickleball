@@ -1,276 +1,428 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
-*/
-import {Video} from '@google/genai';
-import React, {useCallback, useEffect, useState} from 'react';
-import ApiKeyDialog from './components/ApiKeyDialog';
-import {CurvedArrowDownIcon} from './components/icons';
-import LoadingIndicator from './components/LoadingIndicator';
-import PromptForm from './components/PromptForm';
-import VideoResult from './components/VideoResult';
-import {generateVideo} from './services/geminiService';
-import {
-  AppState,
-  GenerateVideoParams,
-  GenerationMode,
-  Resolution,
-  VideoFile,
-} from './types';
+import React, {useMemo, useState} from 'react';
+
+type Court = {
+  id: string;
+  name: string;
+  location: string;
+  surface: string;
+  indoor: boolean;
+  pricePerHour: number;
+  rating: number;
+  amenities: string[];
+  slots: string[];
+};
+
+type Booking = {
+  id: number;
+  courtName: string;
+  date: string;
+  time: string;
+  duration: number;
+  players: number;
+  extras: string[];
+  note?: string;
+  totalCost: number;
+};
+
+const COURTS: Court[] = [
+  {
+    id: 'lake-view',
+    name: 'Lake View Arena',
+    location: 'Quận 2, TP.HCM',
+    surface: 'Acrylic Cushion',
+    indoor: true,
+    pricePerHour: 420000,
+    rating: 4.9,
+    amenities: ['Phòng thay đồ', 'Hệ thống làm mát', 'Huấn luyện viên'],
+    slots: ['06:00', '07:30', '09:00', '10:30', '14:00', '15:30', '17:00', '19:00'],
+  },
+  {
+    id: 'sky-court',
+    name: 'Sky Court Rooftop',
+    location: 'Quận 1, TP.HCM',
+    surface: 'Composite Cushion',
+    indoor: false,
+    pricePerHour: 380000,
+    rating: 4.7,
+    amenities: ['View panorama', 'Khu lounge', 'Hệ thống đèn LED'],
+    slots: ['06:00', '07:30', '09:00', '10:30', '16:00', '17:30', '19:00', '20:30'],
+  },
+  {
+    id: 'garden-club',
+    name: 'Garden Club Courts',
+    location: 'Thảo Điền, TP.HCM',
+    surface: 'Hard Court',
+    indoor: false,
+    pricePerHour: 310000,
+    rating: 4.6,
+    amenities: ['Thuê vợt & bóng', 'Khu vực BBQ', 'Bãi đỗ xe riêng'],
+    slots: ['06:00', '07:30', '09:00', '11:00', '13:00', '15:00', '17:00', '19:00'],
+  },
+];
+
+const EXTRA_OPTIONS = [
+  {id: 'coach', label: 'Huấn luyện viên 60 phút', price: 250000},
+  {id: 'equipment', label: 'Thuê 2 bộ vợt & bóng', price: 120000},
+  {id: 'water', label: 'Combo nước điện giải', price: 60000},
+];
+
+const formatCurrency = (value: number) =>
+  value.toLocaleString('vi-VN', {style: 'currency', currency: 'VND'});
+
+const availabilityRules: Record<string, string[]> = {
+  'lake-view': ['17:00', '19:00'],
+  'sky-court': ['06:00', '19:00'],
+  'garden-club': ['15:00'],
+};
 
 const App: React.FC = () => {
-  const [appState, setAppState] = useState<AppState>(AppState.IDLE);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [lastConfig, setLastConfig] = useState<GenerateVideoParams | null>(
-    null,
+  const [selectedCourtId, setSelectedCourtId] = useState<string>(COURTS[0].id);
+  const [date, setDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [time, setTime] = useState<string>('06:00');
+  const [duration, setDuration] = useState<number>(90);
+  const [players, setPlayers] = useState<number>(2);
+  const [selectedExtras, setSelectedExtras] = useState<string[]>(['equipment']);
+  const [note, setNote] = useState<string>('Muốn giữ sân có mái che nếu trời mưa.');
+  const [message, setMessage] = useState<string>('');
+  const [bookings, setBookings] = useState<Booking[]>([]);
+
+  const selectedCourt = useMemo(
+    () => COURTS.find((court) => court.id === selectedCourtId) ?? COURTS[0],
+    [selectedCourtId],
   );
-  const [lastVideoObject, setLastVideoObject] = useState<Video | null>(null);
-  const [lastVideoBlob, setLastVideoBlob] = useState<Blob | null>(null);
-  const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
 
-  // A single state to hold the initial values for the prompt form
-  const [initialFormValues, setInitialFormValues] =
-    useState<GenerateVideoParams | null>(null);
+  const availability = useMemo(() => {
+    const busySlots = availabilityRules[selectedCourtId] ?? [];
+    return selectedCourt.slots.map((slot) => ({
+      time: slot,
+      status: busySlots.includes(slot) ? 'full' : slot === '19:00' ? 'limited' : 'available',
+    }));
+  }, [selectedCourt, selectedCourtId]);
 
-  // Check for API key on initial load
-  useEffect(() => {
-    const checkApiKey = async () => {
-      if (window.aistudio) {
-        try {
-          if (!(await window.aistudio.hasSelectedApiKey())) {
-            setShowApiKeyDialog(true);
-          }
-        } catch (error) {
-          console.warn(
-            'aistudio.hasSelectedApiKey check failed, assuming no key selected.',
-            error,
-          );
-          setShowApiKeyDialog(true);
-        }
-      }
+  const toggleExtra = (id: string) => {
+    setSelectedExtras((prev) =>
+      prev.includes(id) ? prev.filter((extra) => extra !== id) : [...prev, id],
+    );
+  };
+
+  const calculateTotal = () => {
+    const base = (duration / 60) * selectedCourt.pricePerHour;
+    const extrasCost = selectedExtras.reduce((sum, id) => {
+      const extra = EXTRA_OPTIONS.find((item) => item.id === id);
+      return sum + (extra?.price ?? 0);
+    }, 0);
+    return base + extrasCost;
+  };
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const slotStatus = availability.find((slot) => slot.time === time);
+    if (slotStatus?.status === 'full') {
+      setMessage('Khung giờ này đã kín. Vui lòng chọn giờ khác.');
+      return;
+    }
+
+    const newBooking: Booking = {
+      id: Date.now(),
+      courtName: selectedCourt.name,
+      date,
+      time,
+      duration,
+      players,
+      extras: EXTRA_OPTIONS.filter((extra) => selectedExtras.includes(extra.id)).map(
+        (extra) => extra.label,
+      ),
+      note,
+      totalCost: calculateTotal(),
     };
-    checkApiKey();
-  }, []);
 
-  const showStatusError = (message: string) => {
-    setErrorMessage(message);
-    setAppState(AppState.ERROR);
+    setBookings((prev) => [newBooking, ...prev].slice(0, 4));
+    setMessage('Đã giữ sân thành công! Chúng tôi sẽ liên hệ để xác nhận trong 5 phút.');
   };
-
-  const handleGenerate = useCallback(async (params: GenerateVideoParams) => {
-    if (window.aistudio) {
-      try {
-        if (!(await window.aistudio.hasSelectedApiKey())) {
-          setShowApiKeyDialog(true);
-          return;
-        }
-      } catch (error) {
-        console.warn(
-          'aistudio.hasSelectedApiKey check failed, assuming no key selected.',
-          error,
-        );
-        setShowApiKeyDialog(true);
-        return;
-      }
-    }
-
-    setAppState(AppState.LOADING);
-    setErrorMessage(null);
-    setLastConfig(params);
-    // Reset initial form values for the next fresh start
-    setInitialFormValues(null);
-
-    try {
-      const {objectUrl, blob, video} = await generateVideo(params);
-      setVideoUrl(objectUrl);
-      setLastVideoBlob(blob);
-      setLastVideoObject(video);
-      setAppState(AppState.SUCCESS);
-    } catch (error) {
-      console.error('Video generation failed:', error);
-      const errorMessage =
-        error instanceof Error ? error.message : 'An unknown error occurred.';
-
-      let userFriendlyMessage = `Tạo video thất bại: ${errorMessage}`;
-      let shouldOpenDialog = false;
-
-      if (typeof errorMessage === 'string') {
-        if (errorMessage.includes('Requested entity was not found.')) {
-          userFriendlyMessage =
-            'Không tìm thấy Model. Nguyên nhân có thể do khóa API không hợp lệ hoặc thiếu quyền. Vui lòng kiểm tra lại khóa API.';
-          shouldOpenDialog = true;
-        } else if (
-          errorMessage.includes('API_KEY_INVALID') ||
-          errorMessage.includes('API key not valid') ||
-          errorMessage.toLowerCase().includes('permission denied')
-        ) {
-          userFriendlyMessage =
-            'Khóa API không hợp lệ hoặc thiếu quyền. Vui lòng chọn một khóa API có bật thanh toán (Billing).';
-          shouldOpenDialog = true;
-        }
-      }
-
-      setErrorMessage(userFriendlyMessage);
-      setAppState(AppState.ERROR);
-
-      if (shouldOpenDialog) {
-        setShowApiKeyDialog(true);
-      }
-    }
-  }, []);
-
-  const handleRetry = useCallback(() => {
-    if (lastConfig) {
-      handleGenerate(lastConfig);
-    }
-  }, [lastConfig, handleGenerate]);
-
-  const handleApiKeyDialogContinue = async () => {
-    setShowApiKeyDialog(false);
-    if (window.aistudio) {
-      await window.aistudio.openSelectKey();
-    }
-    if (appState === AppState.ERROR && lastConfig) {
-      handleRetry();
-    }
-  };
-
-  const handleNewVideo = useCallback(() => {
-    setAppState(AppState.IDLE);
-    setVideoUrl(null);
-    setErrorMessage(null);
-    setLastConfig(null);
-    setLastVideoObject(null);
-    setLastVideoBlob(null);
-    setInitialFormValues(null); // Clear the form state
-  }, []);
-
-  const handleTryAgainFromError = useCallback(() => {
-    if (lastConfig) {
-      setInitialFormValues(lastConfig);
-      setAppState(AppState.IDLE);
-      setErrorMessage(null);
-    } else {
-      // Fallback to a fresh start if there's no last config
-      handleNewVideo();
-    }
-  }, [lastConfig, handleNewVideo]);
-
-  const handleExtend = useCallback(async () => {
-    if (lastConfig && lastVideoBlob && lastVideoObject) {
-      try {
-        const file = new File([lastVideoBlob], 'last_video.mp4', {
-          type: lastVideoBlob.type,
-        });
-        const videoFile: VideoFile = {file, base64: ''};
-
-        setInitialFormValues({
-          ...lastConfig, // Carry over model, aspect ratio
-          mode: GenerationMode.EXTEND_VIDEO,
-          prompt: 'Zoom out to reveal the entire tournament crowd cheering', // Default extend prompt for pickleball
-          inputVideo: videoFile, // for preview in the form
-          inputVideoObject: lastVideoObject, // for the API call
-          resolution: Resolution.P720, // Extend requires 720p
-          // Reset other media types
-          startFrame: null,
-          endFrame: null,
-          referenceImages: [],
-          styleImage: null,
-          isLooping: false,
-        });
-
-        setAppState(AppState.IDLE);
-        setVideoUrl(null);
-        setErrorMessage(null);
-      } catch (error) {
-        console.error('Failed to process video for extension:', error);
-        const message =
-          error instanceof Error ? error.message : 'An unknown error occurred.';
-        showStatusError(`Thất bại khi chuẩn bị mở rộng video: ${message}`);
-      }
-    }
-  }, [lastConfig, lastVideoBlob, lastVideoObject]);
-
-  const renderError = (message: string) => (
-    <div className="text-center bg-red-900/20 border border-red-500 p-8 rounded-lg">
-      <h2 className="text-2xl font-bold text-red-400 mb-4">Dịch Vụ Gián Đoạn</h2>
-      <p className="text-red-300">{message}</p>
-      <button
-        onClick={handleTryAgainFromError}
-        className="mt-6 px-6 py-2 bg-lime-500 rounded-lg hover:bg-lime-600 text-black font-bold transition-colors">
-        Thử Đặt Lại
-      </button>
-    </div>
-  );
 
   return (
-    <div className="min-h-screen bg-slate-900 text-gray-200 flex flex-col font-sans overflow-hidden bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]">
-      {showApiKeyDialog && (
-        <ApiKeyDialog onContinue={handleApiKeyDialogContinue} />
-      )}
-      <header className="py-6 flex flex-col justify-center items-center px-8 relative z-10 border-b border-lime-500/30 bg-slate-900/80 backdrop-blur-md">
-        <div className="flex items-center gap-3">
-            {/* Simple Pickleball Icon approximation */}
-            <div className="w-10 h-10 rounded-full bg-lime-400 flex items-center justify-center shadow-[0_0_15px_rgba(163,230,53,0.5)]">
-                <div className="w-8 h-8 rounded-full border-2 border-slate-900 grid grid-cols-2 gap-0.5 p-0.5">
-                    <div className="bg-slate-900 rounded-full"></div>
-                    <div className="bg-slate-900 rounded-full"></div>
-                    <div className="bg-slate-900 rounded-full"></div>
-                    <div className="bg-slate-900 rounded-full"></div>
-                </div>
+    <div className="page">
+      <header className="hero">
+        <div className="brand">PicklePlan</div>
+        <div className="hero__content">
+          <div>
+            <p className="eyebrow">Đặt lịch sân pickleball tức thì</p>
+            <h1>Chọn sân, chọn giờ, phần còn lại để chúng tôi lo.</h1>
+            <p className="lede">
+              Kiểm tra trạng thái trống, thêm huấn luyện viên, quản lý lịch chơi theo nhóm
+              chỉ với vài cú nhấp. Không cần gọi điện, không phải chờ đợi.
+            </p>
+            <div className="hero__actions">
+              <a className="button button--primary" href="#booking">Bắt đầu đặt sân</a>
+              <span className="hero__note">Cam kết giữ sân trong 15 phút sau khi đặt.</span>
             </div>
-            <h1 className="text-4xl font-extrabold tracking-tight text-white">
-            Pickleball<span className="text-lime-400">Nexus</span>
-            </h1>
-        </div>
-        <p className="text-sm text-lime-200/80 mt-1 uppercase tracking-widest font-semibold">Đặt Sân & Mô Phỏng Trực Quan</p>
-      </header>
-      <main className="w-full max-w-4xl mx-auto flex-grow flex flex-col p-4">
-        {appState === AppState.IDLE ? (
-          <>
-            <div className="flex-grow flex flex-col items-center justify-center py-8">
-              <div className="relative text-center mb-8">
-                <h2 className="text-3xl text-white font-bold mb-2">
-                  Đặt Lịch Sân Của Bạn
-                </h2>
-                <p className="text-slate-400 max-w-md mx-auto">
-                    Chọn loại sân và thời gian bạn muốn. AI của chúng tôi sẽ kiểm tra tình trạng trống và tạo mô phỏng trực tiếp về điều kiện sân bãi.
-                </p>
+            <div className="hero__badges">
+              <div>
+                <strong>+1800</strong>
+                <span>lượt đặt thành công tháng này</span>
               </div>
-              <div className="w-full">
-                <PromptForm
-                    onGenerate={handleGenerate}
-                    initialValues={initialFormValues}
-                />
+              <div>
+                <strong>4.8/5</strong>
+                <span>đánh giá từ hội viên</span>
+              </div>
+              <div>
+                <strong>12</strong>
+                <span>sân đối tác trung tâm TP.HCM</span>
               </div>
             </div>
-          </>
-        ) : (
-          <div className="flex-grow flex items-center justify-center">
-            {appState === AppState.LOADING && <LoadingIndicator />}
-            {appState === AppState.SUCCESS && videoUrl && (
-              <VideoResult
-                videoUrl={videoUrl}
-                onRetry={handleRetry}
-                onNewVideo={handleNewVideo}
-                onExtend={handleExtend}
-                canExtend={lastConfig?.resolution === Resolution.P720}
-              />
-            )}
-            {appState === AppState.SUCCESS &&
-              !videoUrl &&
-              renderError(
-                'Video đã được tạo nhưng thiếu URL. Vui lòng thử lại.',
-              )}
-            {appState === AppState.ERROR &&
-              errorMessage &&
-              renderError(errorMessage)}
           </div>
-        )}
+          <div className="hero__panel">
+            <p className="hero__panel-title">Ưu đãi giờ vàng</p>
+            <ul>
+              <li>
+                <span>06:00 - 09:00</span>
+                <strong>-10% cho hội viên</strong>
+              </li>
+              <li>
+                <span>17:00 - 19:00</span>
+                <strong>Combo sân + huấn luyện viên</strong>
+              </li>
+              <li>
+                <span>Cuối tuần</span>
+                <strong>Trả góp 0% cho gói 10 buổi</strong>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </header>
+
+      <main className="content" id="booking">
+        <section className="booking">
+          <div className="section__header">
+            <div>
+              <p className="eyebrow">Đơn giữ sân</p>
+              <h2>Điền thông tin đặt lịch</h2>
+              <p className="muted">Chúng tôi sẽ xác nhận lại trong vòng vài phút.</p>
+            </div>
+            <div className="pill">100% hoàn tiền nếu sân không đạt chuẩn</div>
+          </div>
+          <div className="booking__layout">
+            <form className="card form" onSubmit={handleSubmit}>
+              <div className="form__row">
+                <label>
+                  Sân
+                  <select
+                    value={selectedCourtId}
+                    onChange={(event) => setSelectedCourtId(event.target.value)}
+                  >
+                    {COURTS.map((court) => (
+                      <option key={court.id} value={court.id}>
+                        {court.name} · {court.location}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Ngày
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(event) => setDate(event.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div className="form__row">
+                <label>
+                  Khung giờ
+                  <select value={time} onChange={(event) => setTime(event.target.value)}>
+                    {selectedCourt.slots.map((slot) => (
+                      <option key={slot} value={slot}>
+                        {slot}
+                        {availabilityRules[selectedCourtId]?.includes(slot) ? ' · sắp kín' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Thời lượng
+                  <select
+                    value={duration}
+                    onChange={(event) => setDuration(Number(event.target.value))}
+                  >
+                    <option value={60}>60 phút</option>
+                    <option value={90}>90 phút</option>
+                    <option value={120}>120 phút</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="form__row">
+                <label>
+                  Số người chơi
+                  <input
+                    type="number"
+                    min={2}
+                    max={8}
+                    value={players}
+                    onChange={(event) => setPlayers(Number(event.target.value))}
+                  />
+                </label>
+                <label>
+                  Ghi chú
+                  <input
+                    type="text"
+                    placeholder="Ví dụ: Ưu tiên sân gần cổng, thêm khăn lạnh"
+                    value={note}
+                    onChange={(event) => setNote(event.target.value)}
+                  />
+                </label>
+              </div>
+
+              <fieldset className="extras">
+                <legend>Tiện ích thêm</legend>
+                {EXTRA_OPTIONS.map((extra) => (
+                  <label key={extra.id} className="extras__item">
+                    <input
+                      type="checkbox"
+                      checked={selectedExtras.includes(extra.id)}
+                      onChange={() => toggleExtra(extra.id)}
+                    />
+                    <div>
+                      <div className="extras__name">{extra.label}</div>
+                      <div className="muted">{formatCurrency(extra.price)}</div>
+                    </div>
+                  </label>
+                ))}
+              </fieldset>
+
+              <div className="summary">
+                <div>
+                  <p className="muted">Tạm tính</p>
+                  <strong className="summary__price">{formatCurrency(calculateTotal())}</strong>
+                  <p className="muted">Đã bao gồm phí giữ sân và thuế VAT.</p>
+                </div>
+                <button type="submit" className="button button--primary">
+                  Giữ sân ngay
+                </button>
+              </div>
+              {message && <div className="alert">{message}</div>}
+            </form>
+
+            <div className="stack">
+              <div className="card availability">
+                <div className="section__header">
+                  <div>
+                    <p className="eyebrow">Tình trạng</p>
+                    <h3>Khả dụng trong ngày</h3>
+                  </div>
+                  <span className="pill pill--soft">Cập nhật mỗi 2 phút</span>
+                </div>
+                <ul className="availability__list">
+                  {availability.map((slot) => (
+                    <li key={slot.time} className={`availability__item availability__item--${slot.status}`}>
+                      <div>
+                        <strong>{slot.time}</strong>
+                        <p className="muted">
+                          {slot.status === 'full'
+                            ? 'Đã kín'
+                            : slot.status === 'limited'
+                              ? 'Còn 1 sân'
+                              : 'Còn trống'}
+                        </p>
+                      </div>
+                      <span>
+                        {slot.status === 'full' && '❌'}
+                        {slot.status === 'limited' && '⏳'}
+                        {slot.status === 'available' && '✅'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="card bookings">
+                <div className="section__header">
+                  <div>
+                    <p className="eyebrow">Lịch của bạn</p>
+                    <h3>Đặt chỗ gần đây</h3>
+                  </div>
+                  <span className="pill pill--soft">Tự động nhắc giờ</span>
+                </div>
+                {bookings.length === 0 ? (
+                  <p className="muted">Chưa có đặt chỗ nào. Hãy giữ sân đầu tiên của bạn!</p>
+                ) : (
+                  <ul className="bookings__list">
+                    {bookings.map((booking) => (
+                      <li key={booking.id}>
+                        <div>
+                          <strong>{booking.courtName}</strong>
+                          <p className="muted">
+                            {booking.date} · {booking.time} · {booking.duration} phút · {booking.players} người
+                          </p>
+                          {booking.extras.length > 0 && (
+                            <p className="tagline">{booking.extras.join(' · ')}</p>
+                          )}
+                        </div>
+                        <span className="summary__price">{formatCurrency(booking.totalCost)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="courts">
+          <div className="section__header">
+            <div>
+              <p className="eyebrow">Sân nổi bật</p>
+              <h2>Chọn sân phù hợp với nhóm của bạn</h2>
+              <p className="muted">Đã bao gồm đèn chiếu sáng, khăn lạnh và nước lọc miễn phí.</p>
+            </div>
+          </div>
+          <div className="courts__grid">
+            {COURTS.map((court) => (
+              <article key={court.id} className="card court">
+                <div className="court__header">
+                  <div>
+                    <h3>{court.name}</h3>
+                    <p className="muted">{court.location}</p>
+                  </div>
+                  <div className="pill">{court.indoor ? 'Trong nhà' : 'Ngoài trời'}</div>
+                </div>
+                <p className="tagline">Bề mặt {court.surface} · {court.amenities.join(' · ')}</p>
+                <div className="court__meta">
+                  <span>⭐ {court.rating}</span>
+                  <span>{formatCurrency(court.pricePerHour)}/giờ</span>
+                  <span>{court.slots.length} khung giờ trống</span>
+                </div>
+                <button
+                  className="button"
+                  onClick={() => {
+                    setSelectedCourtId(court.id);
+                    setTime(court.slots[0]);
+                    setMessage('Đã chọn sân. Hoàn tất thông tin để giữ chỗ.');
+                  }}
+                >
+                  Chọn sân này
+                </button>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="cta">
+          <div>
+            <p className="eyebrow">Sẵn sàng ra sân?</p>
+            <h2>Đặt lịch pickleball trong 60 giây.</h2>
+            <p className="muted">Chúng tôi giữ sân miễn phí trong 15 phút và hỗ trợ hủy linh hoạt.</p>
+          </div>
+          <a className="button button--primary" href="#booking">
+            Mở form đặt sân
+          </a>
+        </section>
       </main>
-      <footer className="py-4 text-center text-slate-600 text-xs">
-        Được hỗ trợ bởi Google Veo &bull; Trải nghiệm tương lai của thể thao
+
+      <footer className="footer">
+        <p>PicklePlan · Kết nối cộng đồng pickleball Việt Nam</p>
+        <p className="muted">Hỗ trợ 24/7 qua chat & hotline 1800-6868</p>
       </footer>
     </div>
   );

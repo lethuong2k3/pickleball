@@ -1,20 +1,15 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# PicklePlan
 
-# Run and deploy your AI Studio app
+Ứng dụng web đơn giản để đặt lịch sân pickleball. Trang này được thiết kế lại với giao diện tối, cung cấp:
 
-This contains everything you need to run your app locally.
+- Form đặt sân kèm lựa chọn khung giờ, số người chơi và tiện ích thêm (huấn luyện viên, thuê vợt, đồ uống).
+- Bảng tình trạng khả dụng theo giờ để tránh đặt trùng.
+- Danh sách sân nổi bật với giá, đánh giá và tiện nghi.
+- Tóm tắt chi phí tạm tính và danh sách các đặt chỗ gần đây.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1d2sOvmqd3KFOHlBGaoYw2oxQU_UwaTaa
+## Chạy ứng dụng
 
-## Run Locally
+1. Cài đặt phụ thuộc: `npm install`
+2. Khởi động môi trường phát triển: `npm run dev`
 
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Ứng dụng mặc định chạy trên `http://localhost:5173`.
